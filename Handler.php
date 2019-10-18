@@ -272,9 +272,9 @@ abstract class Handler implements \Iterator, \Countable
         $header = $this->phpPath ? '<?php exit;?>' : '';
         // header: test/status/optimized/createTime/count
         // status (0:normal, 1:clear, 2:creating, 3:waiting optimize)
-        $header .= '02'.$optimized.pack('LL', time(), 0);
+        $header .= '02'.$optimized.pack('VV', time(), 0);
         fwrite($handler, $header);
-        $pack = pack('L', 0);
+        $pack = pack('V', 0);
         $slices = floor(self::MASK / 4000);
         for ($i = 0; $i < $slices; $i++) {
             fwrite($handler, str_repeat($pack, 4000));
@@ -549,7 +549,7 @@ abstract class Handler implements \Iterator, \Countable
                     $count = $slice;
                 }
                 fseek($handler, $this->currentSlice * $slice * 4 + $this->getStartLength(), SEEK_SET);
-                $header = unpack('L'.$count, fread($handler, $count * 4));
+                $header = unpack('V'.$count, fread($handler, $count * 4));
                 if (!is_array($header) || !isset($header[1]) || !isset($header[$count])) {
                     $this->setError('Get header index failed');
                     return $this;
@@ -654,7 +654,7 @@ abstract class Handler implements \Iterator, \Countable
         $this->handler = null;
         // 刚刚优化过
         fseek($handler, $this->getHeaderLen(3), SEEK_SET);
-        $createTime = unpack('L', fread($handler, 4));
+        $createTime = unpack('V', fread($handler, 4));
         if (!is_array($createTime) || !isset($createTime[1])) {
             fclose($handler);
             $this->setError('Get last optimize time failed');
@@ -871,7 +871,7 @@ abstract class Handler implements \Iterator, \Countable
     protected function getUnpackInt($handler, $seek)
     {
         fseek($handler, $seek, SEEK_SET);
-        $position = unpack('L', fread($handler, 4));
+        $position = unpack('V', fread($handler, 4));
         if (!is_array($position) || !isset($position[1])) {
             $this->setError('Read pack number failed');
             return false;
@@ -969,7 +969,7 @@ abstract class Handler implements \Iterator, \Countable
         }
         $count = max(0,$position+ 1);
         fseek($handler, $seek);
-        return $this->writeBufferToHandler($handler, pack('L', $count));
+        return $this->writeBufferToHandler($handler, pack('V', $count));
     }
 
     /**
@@ -985,7 +985,7 @@ abstract class Handler implements \Iterator, \Countable
         }
         $count = max(0, $position - 1);
         fseek($handler, $seek);
-        return $this->writeBufferToHandler($handler, pack('L', $count));
+        return $this->writeBufferToHandler($handler, pack('V', $count));
     }
 
     /**
@@ -1047,7 +1047,7 @@ abstract class Handler implements \Iterator, \Countable
     {
         $handler = $this->getHandler();
         fseek($handler, $this->getStartLength(), SEEK_SET);
-        $header = unpack('L*', fread($handler, self::MASK * 4));
+        $header = unpack('V*', fread($handler, self::MASK * 4));
         $header = array_filter($header);
         $header = array_values($header);
         $counts = [];
@@ -1068,7 +1068,7 @@ abstract class Handler implements \Iterator, \Countable
     {
         $count++;
         fseek($handler, $position + 18, SEEK_SET);
-        $header = unpack('L', fread($handler, 4));
+        $header = unpack('V', fread($handler, 4));
         if (is_array($header) && isset($header[1]) && $header[1] > 0) {
             return $this->getIndexCount($handler, $header[1], $count);
         }
@@ -1095,20 +1095,7 @@ abstract class Handler implements \Iterator, \Countable
         if (!strlen($key)) {
             return false;
         }
-
-        // 实测发现 crc32 与下面的 hash 函数对比, 散列性差不多, 但性能提升了 20 倍
         return crc32($key) % self::MASK;
-
-        // 对 key 进行 md5 hash, 不然, 连续字符, 会造成链表过长, 效率低下
-        // $len = 32;
-        // $key = md5($key);
-        // $high = 0x238F13AF;
-        // while ($len--) {
-        //    $high += ($high << 5);
-        //    $high ^= ord($key[$len]);
-        //    $high &= 0xFFFFFFF;
-        // }
-        // return ($high % self::MASK);
     }
 
     /**
@@ -1118,13 +1105,7 @@ abstract class Handler implements \Iterator, \Countable
      */
     protected static function crc($str)
     {
-        $crc = crc32($str);
-        if($crc & 0x80000000){
-            $crc ^= 0xffffffff;
-            $crc += 1;
-            $crc = -$crc;
-        }
-        return $crc;
+        return hash('crc32', $str, true);
     }
 
     /**

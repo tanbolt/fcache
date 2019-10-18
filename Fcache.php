@@ -9,8 +9,8 @@ namespace Tanbolt\Fcache;
  * 数据结构 (头部索引结构参见 abstract Handler)
  * ------------------------------------------------------------------------------------------------------
  * 通过索引头部到指定 position 的数据结构
- * keyLength(2) | valueLength(4) | crc(4) | expire(4)| prePosition(4) | nxtPosition(4) - 22bit ( key  | value)
- * key长度      | 值长度         | 数据crc | 过期时间 | 前置key位置     | 后置key位置             ( key值 | 数据)
+ * kLen(2)  / eLen(4)      /  vLen(4)    / expire(4) / prev(4)    / next(4)     / crc(4)   - ( key  | value)
+ * key长度  / 数据占位符长度  / 实际数据长度 / 过期时间   / 前置key位置  / 后置key位置  / 数据crc  - ( key值 | 数据)
  *
  */
 class Fcache extends Handler implements \ArrayAccess
@@ -87,7 +87,7 @@ class Fcache extends Handler implements \ArrayAccess
                 $this->packKeyValue($key, $value, $expire, 0, 0, $increase ? 16 : 0))
             ) {
                 fseek($handler, $bucketPosition, SEEK_SET);
-                $this->writeBufferToHandler($handler, pack('L', $headPosition));
+                $this->writeBufferToHandler($handler, pack('V', $headPosition));
                 $this->increaseCount($handler);
             }
             flock($handler, LOCK_UN);
@@ -95,7 +95,7 @@ class Fcache extends Handler implements \ArrayAccess
         }
 
         // 链表已启用 获取当前key在链表中位置, 若不存在, 会返回链表最后一个元素的位置信息
-        // header: kLen(2) | eLen(4) | vLen(4) | crc(4) | expire(4) | prev(4) | next(4)
+        // header:kLen(2) | eLen(4) | vLen(4) | expire(4) | prev(4) | next(4) | crc(4)
         if (!($header = $this->getKeyHeaderByPosition($handler, $key, $position))) {
             flock($handler, LOCK_UN);
             return false;
@@ -112,15 +112,17 @@ class Fcache extends Handler implements \ArrayAccess
         if (!$header['current']) {
             $value = static::serialize($mixValue);
             fseek($handler, 0, SEEK_END);
-            $headPosition = pack('L', ftell($handler));
+            $headPosition = pack('V', ftell($handler));
             if ($ok = $this->writeBufferToHandler(
                 $handler,
                 $this->packKeyValue($key, $value, $expire, 0, $position, $increase ? 16 : 0))
             ) {
+                // 修改桶中 position
                 fseek($handler, $bucketPosition, SEEK_SET);
                 $this->writeBufferToHandler($handler, $headPosition);
 
-                fseek($handler, $position + 18, SEEK_SET);
+                // 修改链表开头元素的 prev position
+                fseek($handler, $position + 14, SEEK_SET);
                 $this->writeBufferToHandler($handler, $headPosition);
                 $this->increaseCount($handler);
             }
@@ -133,6 +135,7 @@ class Fcache extends Handler implements \ArrayAccess
             $nowValue = $this->getValueByHeader($handler, $header);
             $mixValue += intval($nowValue);
         }
+
         $value = static::serialize($mixValue);
         if (strlen($value) <= $header['eLen']) {
             // new value length is smaller
@@ -144,25 +147,28 @@ class Fcache extends Handler implements \ArrayAccess
         } else {
             // new value length is bigger
             fseek($handler, 0, SEEK_END);
-            $headPosition = pack('L', ftell($handler));
+            $headPosition = pack('V', ftell($handler));
             if ($ok = $this->writeBufferToHandler(
                 $handler,
                 $this->packKeyValue($key, $value, $expire, $header['prev'], $header['next']))
             ) {
-                // 修改前后 key 值的 prev next position
+                // 修改上一个元素的 next position
                 fseek(
                     $handler,
-                    $header['prev'] > 0 ? (int) $header['prev'] + 22 : $bucketPosition,
+                    $header['prev'] > 0 ? (int) $header['prev'] + 18 : $bucketPosition,
                     SEEK_SET
                 );
                 $this->writeBufferToHandler($handler, $headPosition);
+
+                // 修改下一个元素的 prev position
                 if ($header['next'] > 0) {
-                    fseek($handler, (int) $header['next'] + 18, SEEK_SET);
+                    fseek($handler, (int) $header['next'] + 14, SEEK_SET);
                     $this->writeBufferToHandler($handler, $headPosition);
                 }
+
                 // 标记旧位置为无效状态
                 fseek($handler, $header['position'], SEEK_SET);
-                $this->writeBufferToHandler($handler, pack('S', 0));
+                $this->writeBufferToHandler($handler, pack('v', 0));
             }
         }
         flock($handler, LOCK_UN);
@@ -217,8 +223,8 @@ class Fcache extends Handler implements \ArrayAccess
             flock($handler, LOCK_UN);
             return true;
         }
-        fseek($handler, $header['position'] + 14, SEEK_SET);
-        $ok = $this->writeBufferToHandler($handler, pack('L', $expire));
+        fseek($handler, $header['position'] + 10, SEEK_SET);
+        $ok = $this->writeBufferToHandler($handler, pack('V', $expire));
         flock($handler, LOCK_UN);
         return (bool) $ok;
     }
@@ -265,19 +271,19 @@ class Fcache extends Handler implements \ArrayAccess
         }
         // 修改当前值的 kLen, 标记为无效
         fseek($handler, $header['position'], SEEK_SET);
-        if ($ok = $this->writeBufferToHandler($handler, pack('S', 0))) {
-            // 修改前一个 key 值的 next position
+        if ($ok = $this->writeBufferToHandler($handler, pack('v', 0))) {
+            // 修改前一个元素 的 next position
             fseek(
                 $handler,
-                $header['prev'] > 0 ? (int) $header['prev'] + 22 : $this->getIndexPosition($index),
+                $header['prev'] > 0 ? (int) $header['prev'] + 18 : $this->getIndexPosition($index),
                 SEEK_SET
             );
-            $this->writeBufferToHandler($handler, pack('L', $header['next']));
+            $this->writeBufferToHandler($handler, pack('V', $header['next']));
 
-            // 修改后一个 key 值的 prev position
+            // 修改后一个元素 的 prev position
             if ($header['next'] > 0) {
-                fseek($handler, (int) $header['next'] + 18, SEEK_SET);
-                $this->writeBufferToHandler($handler, pack('L', $header['prev']));
+                fseek($handler, (int) $header['next'] + 14, SEEK_SET);
+                $this->writeBufferToHandler($handler, pack('V', $header['prev']));
             }
             $this->decreaseCount($handler);
         }
@@ -360,11 +366,9 @@ class Fcache extends Handler implements \ArrayAccess
         fseek($handler, (int) $header['position'] + (int) $header['kLen'] + 26, SEEK_SET);
         $data = fread($handler, $header['vLen']);
         if ($getTtl) {
-            $data = static::crc($data) !== $header['crc'] ? null : $header['expire'];
-        } else {
-            $data = $this->checkValue($data, $header);
+            return static::crc($data) === $header['crc'] ? $header['expire'] : null;
         }
-        return $data;
+        return $this->checkValue($data, $header);
     }
 
     /**
@@ -374,13 +378,42 @@ class Fcache extends Handler implements \ArrayAccess
      */
     protected function checkValue($data, $header)
     {
-        if (static::crc($data) !== $header['crc']) {
-            return null;
-        }
-        if ($header['expire'] > 0 && $header['expire'] < time()) {
+        if (static::crc($data) !== $header['crc'] ||
+            ($header['expire'] > 0 && $header['expire'] < time())
+        ) {
             return null;
         }
         return static::unserialize($data);
+    }
+
+    /**
+     * 打包键值对
+     * @param $key
+     * @param $value
+     * @param $expire
+     * @param $prePosition
+     * @param $nxtPosition
+     * @param int $expectLen
+     * @param bool $reWrite
+     * @return string
+     */
+    protected function packKeyValue($key, $value, $expire, $prePosition, $nxtPosition, $expectLen = 0, $reWrite = false)
+    {
+        $crc = static::crc($value);
+        $expire = $expire ? time() + $expire : 0;
+
+        // 若 value 长度较为固定, 首次写入可设置一个期望长度值, 这样修改时会在原位置进行修改
+        $eLen = $vLen = strlen($value);
+        if ($expectLen && $expectLen > $vLen) {
+            $eLen = $expectLen;
+            if (!$reWrite) {
+                $value .= str_repeat('0', $eLen - $vLen);
+            }
+        }
+
+        //kLen(2) | eLen(4) | vLen(4) | expire(4) | prev(4) | next(4) | crc(4)
+        $header = pack('vVVVVV', strlen($key), $eLen, $vLen, $expire, $prePosition, $nxtPosition).$crc;
+        return $header.$key.$value;
     }
 
     /**
@@ -420,43 +453,15 @@ class Fcache extends Handler implements \ArrayAccess
     protected function getHeaderByPosition($handler, $position)
     {
         fseek($handler, $position, SEEK_SET);
-        $header = fread($handler, 26);
-        $header = strlen($header) === 26 ? unpack('SkLen/LeLen/LvLen/lcrc/Lexpire/Lprev/Lnext', $header) : null;
-        if (!is_array($header) || count($header) !== 7) {
-            $this->setError('Get key header failed');
-            return false;
+        $header = fread($handler, 22);
+        $header = strlen($header) === 22 ? unpack('vkLen/VeLen/VvLen/Vexpire/Vprev/Vnext', $header) : null;
+        if ($header && count($header) === 6 && strlen($crc = fread($handler, 4)) === 4) {
+            $header['crc'] = $crc;
+            $header['position'] = $position;
+            return $header;
         }
-        $header['position'] = $position;
-        return $header;
-    }
-
-    /**
-     * 打包键值对
-     * @param $key
-     * @param $value
-     * @param $expire
-     * @param $prePosition
-     * @param $nxtPosition
-     * @param int $expectLen
-     * @param bool $reWrite
-     * @return string
-     */
-    protected function packKeyValue($key, $value, $expire, $prePosition, $nxtPosition, $expectLen = 0, $reWrite = false)
-    {
-        $crc = static::crc($value);
-        $expire = $expire ? time() + $expire : 0;
-
-        // 若 value 长度较为固定, 首次写入可设置一个期望长度值, 这样修改时会在原位置进行修改
-        $eLen = $vLen = strlen($value);
-        if ($expectLen && $expectLen > $vLen) {
-            $eLen = $expectLen;
-            if (!$reWrite) {
-                $value .= str_repeat('0', $eLen - $vLen);
-            }
-        }
-        // keyLength(2) | expectLen(4) | valueLength(4) | crc(4) | expire(4) | prePosition(4) | nxtPosition(4)
-        $header = pack('SLLlLLL', strlen($key), $eLen, $vLen, $crc, $expire, $prePosition, $nxtPosition);
-        return $header.$key.$value;
+        $this->setError('Get key header failed');
+        return false;
     }
 
     /**

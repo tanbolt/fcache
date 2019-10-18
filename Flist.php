@@ -14,8 +14,8 @@ use RuntimeException;
  * key长度      / 前置key位置      /  后置key位置     /  keyLists 起始位置  - key 值
  * ------------------------------------------------------------------------------------------------------
  * 通过key索引到指定的 position 数据结构
- * valueLength(4) / valueCrc(4) / prevPosition  / nextPosition   -  value
- * key长度        / 数据crc      / 前一个数据位置   / 后一个数据位置  -  value数据
+ * valueLength(4) / prevPosition  / nextPosition / valueCrc(4) -  value
+ * key长度        / 前一个数据位置  / 后一个数据位置  / 数据crc     -  value数据
  *
  */
 class Flist extends Handler implements \ArrayAccess
@@ -218,7 +218,6 @@ class Flist extends Handler implements \ArrayAccess
         if (false === ($position = $this->getUnpackInt($handler, $bucketPosition))) {
             return false;
         }
-
         //keyHeader: [kLen, prev, next, position, now, key, current]
         $keyHeader = $this->getKeyHeader($handler, $position, $key, $op, false, null);
 
@@ -271,26 +270,32 @@ class Flist extends Handler implements \ArrayAccess
         } elseif (!strlen($pivot)) {
             return false;
         }
+
         $vHeader = $this->getValueHeaders($handler, $keyHeader['position'], $pivot, $isIndex, 1);
         if (!$vHeader) {
             return false;
         }
         $vHeader = reset($vHeader);
+
         // 写入数据到 插入点 的前后
         // valueLength/valueCrc/prevPosition/nextPosition - value
         $endPosition = 0;
         if ($append) {
             $position = $this->writeKeyValues($handler, $values, $vHeader['position'], $vHeader['next'], $endPosition);
-            $this->writePack($handler, $vHeader['position'] + 12, $position);
+            // 修改前一个 value 的 next position
+            $this->writePack($handler, $vHeader['position'] + 8, $position);
+            // 修改后一个 value 的 prev position
             if ($vHeader['next']) {
-                $this->writePack($handler, $vHeader['next'] + 8, $endPosition);
+                $this->writePack($handler, $vHeader['next'] + 4, $endPosition);
             }
         } else {
             $prev = $vHeader['position'] === $keyHeader['position'] ? 0 : $vHeader['prev']; //是否插入到最开头
             $position = $this->writeKeyValues($handler, $values, $prev, $vHeader['position'], $endPosition);
-            $this->writePack($handler, $vHeader['position'] + 8, $endPosition);
+            // 修改后一个 value 的 prev position
+            $this->writePack($handler, $vHeader['position'] + 4, $endPosition);
+            // 修改前一个 value 的 next position 或 key 中 value 起始 position
             if ($prev) {
-                $this->writePack($handler, $prev + 12, $position);
+                $this->writePack($handler, $prev + 8, $position);
             } else {
                 $this->writePack($handler, $keyHeader['now'] + 10, $position);
             }
@@ -310,7 +315,7 @@ class Flist extends Handler implements \ArrayAccess
         fseek($handler, 0, SEEK_END);
         $position = ftell($handler);
         //keyLength/prevPosition/nextPosition/valuePosition - keyValue
-        $header = pack('SLLL', strlen($key), 0, (int) $next, 0).$key;
+        $header = pack('vVVV', strlen($key), 0, (int) $next, 0).$key;
         return $this->writeBufferToHandler($handler, $header) ? $position : false;
     }
 
@@ -337,7 +342,7 @@ class Flist extends Handler implements \ArrayAccess
             if ($this->writeBufferToHandler($handler, $value)) {
                 $prev = $endPosition;
             } else {
-                $this->writePack($handler, $endPosition + 12, 0);
+                $this->writePack($handler, $endPosition + 8, 0);
                 throw new RuntimeException('Write '.$current.'th value failed');
             }
             $current++;
@@ -363,8 +368,8 @@ class Flist extends Handler implements \ArrayAccess
         if ($self) {
             $next = 16 + $next + $vLen;
         }
-        // valueLength/valueCrc/prevPosition/nextPosition - value
-        return pack('LlLL', $vLen, static::crc($value), $prev, $next).$value;
+        // valueLength/prevPosition/nextPosition/valueCrc - value
+        return pack('VVV', $vLen, $prev, $next).static::crc($value).$value;
     }
 
     /**
@@ -399,21 +404,22 @@ class Flist extends Handler implements \ArrayAccess
         if ($vLen <= $item['vLen']) {
             // new value length is smaller
             fseek($handler, $item['position'], SEEK_SET);
-            if ($save = $this->writeBufferToHandler($handler, pack('Ll', $vLen, $crc))) {
+            if ($save = $this->writeBufferToHandler($handler, pack('V', $vLen))) {
                 fseek($handler, 8, SEEK_CUR);
-                $save = $this->writeBufferToHandler($handler, $value);
+                $save = $this->writeBufferToHandler($handler, $crc.$value);
             }
         } else {
-            $pack = pack('LlLL', $vLen, $crc, $item['prev'], $item['next']).$value;
+            // new value length is bigger
+            $pack = pack('VVV', $vLen, $item['prev'], $item['next']).$crc.$value;
             fseek($handler, 0, SEEK_END);
             $position = ftell($handler);
             $save = $this->writeBufferToHandler($handler, $pack);
             if ($save) {
                 if ($item['next'] > 0) {
-                    $this->writePack($handler, $item['next'] + 8, $position, false);
+                    $this->writePack($handler, $item['next'] + 4, $position, false);
                 }
                 if ($item['prev'] > 0) {
-                    $this->writePack($handler, $item['prev'] + 12, $position, false);
+                    $this->writePack($handler, $item['prev'] + 8, $position, false);
                 } else {
                     $this->writePack($handler, $keyHeader['now'] + 10, $position, false);
                 }
@@ -439,7 +445,7 @@ class Flist extends Handler implements \ArrayAccess
         $pop = false;
         if ($value) {
             $value = reset($value);
-            if ($this->writePack($handler, ($value['prev'] ? $value['prev'] + 12 : $keyHeader['now'] + 10), 0, false)) {
+            if ($this->writePack($handler, ($value['prev'] ? $value['prev'] + 8 : $keyHeader['now'] + 10), 0, false)) {
                 $pop = $value['value'];
             }
         }
@@ -583,12 +589,12 @@ class Flist extends Handler implements \ArrayAccess
         }
         if ($firstPosition !== false && $firstPosition != $keyHeader['position']) {
             fseek($handler, $keyHeader['now'] + 10, SEEK_SET);
-            $this->writeBufferToHandler($handler, pack('L', $first['position']));
+            $this->writeBufferToHandler($handler, pack('V', $first['position']));
         }
         if (count($range)) {
             foreach ($range as $item) {
-                fseek($handler, $item['position'] + 8, SEEK_SET);
-                $this->writeBufferToHandler($handler, pack('LL', $item['newPrev'], $item['newNext']));
+                fseek($handler, $item['position'] + 4, SEEK_SET);
+                $this->writeBufferToHandler($handler, pack('VV', $item['newPrev'], $item['newNext']));
             }
         }
         flock($handler, LOCK_UN);
@@ -655,9 +661,9 @@ class Flist extends Handler implements \ArrayAccess
             $first = array_shift($range);
             $last = array_pop($range);
             $next = $last ? $last['next'] : $first['next'];
-            $save = $this->writePack($handler, ($first['prev'] ? $first['prev'] + 12: $keyHeader['now'] + 10), $next, false);
+            $save = $this->writePack($handler, ($first['prev'] ? $first['prev'] + 8: $keyHeader['now'] + 10), $next, false);
             if ($save && $next) {
-                $save = $this->writePack($handler, $next + 8, $first['prev'], false);
+                $save = $this->writePack($handler, $next + 4, $first['prev'], false);
             }
         }
         flock($handler, LOCK_UN);
@@ -686,7 +692,7 @@ class Flist extends Handler implements \ArrayAccess
             $first = array_shift($range);
             if ($this->writePack($handler, $keyHeader['now'] + 10, $first['position'], false)) {
                 $last = array_pop($range) ?: $first;
-                $save = $last['next'] ? $this->writePack($handler, $last['position'] + 12, 0, false) : true;
+                $save = $last['next'] ? $this->writePack($handler, $last['position'] + 8, 0, false) : true;
             }
         }
         flock($handler, LOCK_UN);
@@ -704,7 +710,7 @@ class Flist extends Handler implements \ArrayAccess
         if ($keyHeader = $this->getKeyHeaderByKey($key, $handler, true)) {
             // 修改当前值的 kLen, 标记为无效
             fseek($handler, $keyHeader['now'], SEEK_SET);
-            if ($this->writeBufferToHandler($handler, pack('S', 0))) {
+            if ($this->writeBufferToHandler($handler, pack('v', 0))) {
                 // 修改前一个 key 值的 next position
                 if ($keyHeader['prev']) {
                     $this->writePack($handler, $keyHeader['prev'] + 6, $keyHeader['next'], false);
@@ -726,7 +732,7 @@ class Flist extends Handler implements \ArrayAccess
             ($keyHeader = $this->getKeyHeader($handler, $this->getKeyPosition($handler, $index), $key, true, false, true))
         ) {
             fseek($handler, $keyHeader['now'], SEEK_SET);
-            $this->writeBufferToHandler($handler, pack('S', 0));
+            $this->writeBufferToHandler($handler, pack('v', 0));
         }
         return $ok;
     }
@@ -834,7 +840,7 @@ class Flist extends Handler implements \ArrayAccess
         while ($position > 0) {
             fseek($handler, $position, SEEK_SET);
             // keyLength/prevPosition/nextPosition/valuePosition - keyValue
-            $header = unpack('SkLen/Lprev/Lnext/Lposition', fread($handler, 14));
+            $header = unpack('vkLen/Vprev/Vnext/Vposition', fread($handler, 14));
             if (!is_array($header) || count($header) !== 4) {
                 $this->setError('Read key header failed');
                 return false;
@@ -925,6 +931,7 @@ class Flist extends Handler implements \ArrayAccess
         $count = $len = 0;
         $headers = [];
         $diedLoop = [];
+
         while ($position > 0) {
             if (isset($diedLoop[$position])) {
                 $this->setError('Read key list break by die loop');
@@ -973,16 +980,19 @@ class Flist extends Handler implements \ArrayAccess
     protected function getOneValueHeader($handler, $position, $withValue = false)
     {
         fseek($handler, $position, SEEK_SET);
-        // valueLength/valueCrc/prevPosition/nextPosition - value
-        $header = unpack('LvLen/lcrc/Lprev/Lnext', fread($handler, 16));
-        if (!is_array($header) || count($header) !== 4 || !$header['vLen']) {
+        // valueLength/prevPosition/nextPosition/valueCrc - value
+        $header = fread($handler, 12);
+        $header = strlen($header) === 12 ? unpack('VvLen/Vprev/Vnext', $header) : null;
+        if ($header && count($header) === 3 && $header['vLen'] && strlen($crc = fread($handler, 4)) === 4) {
+            $header['crc'] = $crc;
+        } else {
             $this->setError('Read key list value failed');
             return false;
         }
         $header['position'] = $position;
         if ($withValue) {
             $value = fread($handler, (int) $header['vLen']);
-            $header['value'] = static::crc($value) === (int) $header['crc'] ? static::unserialize($value) : null;
+            $header['value'] = static::crc($value) === $header['crc'] ? static::unserialize($value) : null;
         }
         return $header;
     }
@@ -997,7 +1007,7 @@ class Flist extends Handler implements \ArrayAccess
     protected function writePack($handler, $seek, $int, $throw = true)
     {
         fseek($handler, $seek, SEEK_SET);
-        if (!$this->writeBufferToHandler($handler, pack('L', $int))) {
+        if (!$this->writeBufferToHandler($handler, pack('V', $int))) {
             $error = 'Write pack number ['.$int.'] failed on:'.$seek;
             if ($throw) {
                 throw new RuntimeException($error);

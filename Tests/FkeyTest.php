@@ -1,7 +1,7 @@
 <?php
-use Tanbolt\Fcache\Fcache;
+use Tanbolt\Fcache\Fkey;
 
-class FcacheTest extends \PHPUnit_Framework_TestCase
+class FkeyTest extends \PHPUnit_Framework_TestCase
 {
     protected static $file = __DIR__.'/temp/set.dat';
 
@@ -12,62 +12,43 @@ class FcacheTest extends \PHPUnit_Framework_TestCase
         }
     }
 
-    public function testExpire()
+    public function testBase()
     {
         static::clear();
-        $fcache = new Fcache(static::$file);
-        $fcache->set('foo', 'foo');
-        $this->assertEquals(-1, $fcache->ttl('foo'));
+        $fkey = new Fkey(static::$file);
 
-        $fcache->set('bar', 'bar', 100);
-        $ttl = $fcache->ttl('bar');
-        $this->assertTrue($ttl > 98 && $ttl <= 100);
+        $this->assertFalse($fkey->has('foo'));
+        $this->assertTrue($fkey->add('foo'));
+        $this->assertTrue($fkey->has('foo'));
 
-        $fcache->expire('foo', 600);
-        $ttl = $fcache->ttl('foo');
-        $this->assertTrue($ttl > 598 && $ttl <= 600);
 
-        $fcache->expire('foo', -1);
-        $this->assertNull($fcache->get('foo'));
+        $this->assertFalse($fkey->has('bar'));
+        $this->assertTrue($fkey->remove('foo'));
+        $this->assertTrue($fkey->remove('bar'));
+        $this->assertFalse($fkey->has('foo'));
 
-        $fcache->expire('bar', 0);
-        $this->assertEquals(-1, $fcache->ttl('bar'));
-        $fcache->close();
+        $fkey->close();
         unlink(static::$file);
     }
 
-    public function testSet()
-    {
-        static::clear();
-        $fcache = new Fcache(static::$file);
-        for ($i = 0; $i < 1000; $i++) {
-            if (!$fcache->set($i, $i.'_')) {
-                $this->fail("write [$i] failed");
-                $fcache->close();
-                unlink(static::$file);
-                return;
-            }
-        }
-        $this->checkKV($fcache, 1000);
-    }
 
     public function testSetMultiProcess()
     {
         static::clear();
-        $command = 'php '.__DIR__.'/process_set.php kv';
+        $command = 'php '.__DIR__.'/process_set.php fkey';
         exec($command.' 0', $output1);
         exec($command.' 10000', $output2);
         exec($command.' 20000', $output3);
-        $fcache = new Fcache(static::$file);
+        $fcache = new Fkey(static::$file);
         $this->checkKV($fcache, 30000);
     }
 
     public function testSetWhenOptimizing()
     {
         static::clear();
-        $fcache = new Fcache(static::$file);
+        $fcache = new Fkey(static::$file);
         for ($i = 0; $i < 30000; $i++) {
-            if (!$fcache->set($i, $i)) {
+            if (!$fcache->add($i)) {
                 $this->fail("write [$i] failed");
                 $fcache->close();
                 unlink(static::$file);
@@ -76,27 +57,27 @@ class FcacheTest extends \PHPUnit_Framework_TestCase
         }
         $fcache->close();
 
-        $command = 'php '.__DIR__.'/process_optimize.php kv';
+        $command = 'php '.__DIR__.'/process_optimize.php fkey';
         exec($command, $output0);
 
-        $command = 'php '.__DIR__.'/process_set.php kv';
+        $command = 'php '.__DIR__.'/process_set.php fkey';
         exec($command.' 0', $output1);
         exec($command.' 10000', $output2);
         exec($command.' 20000', $output3);
 
-        $fcache = new Fcache(static::$file);
+        $fcache = new Fkey(static::$file);
         $this->checkKV($fcache, 30000);
     }
 
-    protected function checkKV(Fcache $fcache, $end)
+    protected function checkKV(Fkey $fcache, $end)
     {
         //get
         for ($i = 0; $i < $end; $i++) {
-            $val = $fcache->get($i);
-            if ($val !== $i.'_') {
+            $has = $fcache->has($i);
+            if (!$has) {
                 $fcache->close();
                 unlink(static::$file);
-                $this->fail("get [$i] value [$val]");
+                $this->fail("get [$i] failed");
                 return;
             }
         }
@@ -104,10 +85,10 @@ class FcacheTest extends \PHPUnit_Framework_TestCase
         // loop get
         $temp = [];
         for ($i = 0; $i < $end; $i++) {
-            $temp[$i] = 0;
+            $temp[md5($i)] = 1;
         }
         foreach ($fcache as $k => $v) {
-            if ($v !== $k.'_') {
+            if (!$v) {
                 $fcache->close();
                 unlink(static::$file);
                 $this->fail("get [$k] value [$v]");
@@ -124,5 +105,8 @@ class FcacheTest extends \PHPUnit_Framework_TestCase
         } else {
             $this->assertTrue(true);
         }
+
+        // not exist
+        $this->assertFalse($fcache->has($end + 1));
     }
 }

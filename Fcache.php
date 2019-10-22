@@ -72,10 +72,10 @@ class Fcache extends Handler implements \ArrayAccess
      */
     protected function setValue($handler, $index, $key, $mixValue, $expire = 0, $optimize = false, $increase = false)
     {
-        if (!flock($handler, LOCK_EX) || false === ($position = $this->getKeyPosition($handler, $index))) {
+        $bucketPosition = $this->getIndexPosition($index);
+        if (!flock($handler, LOCK_EX) || false === ($position = $this->getUnpackInt($handler, $bucketPosition))) {
             return false;
         }
-        $bucketPosition = $this->getIndexPosition($index);
 
         // 当前链表还没启用 (对于 $increase 情况设置 16 个占位符)
         if ($position === 0) {
@@ -262,7 +262,8 @@ class Fcache extends Handler implements \ArrayAccess
             return false;
         }
         // not has key
-        if(false === ($position = $this->getKeyPosition($handler, $index)) ||
+        $bucketPosition = $this->getIndexPosition($index);
+        if(false === ($position = $this->getUnpackInt($handler, $bucketPosition)) ||
             !($header = $this->getKeyHeaderByPosition($handler, $key, $position)) ||
             !$header['current']
         ) {
@@ -275,7 +276,7 @@ class Fcache extends Handler implements \ArrayAccess
             // 修改前一个元素 的 next position
             fseek(
                 $handler,
-                $header['prev'] > 0 ? (int) $header['prev'] + 18 : $this->getIndexPosition($index),
+                $header['prev'] > 0 ? (int) $header['prev'] + 18 : $bucketPosition,
                 SEEK_SET
             );
             $this->writeBufferToHandler($handler, pack('V', $header['next']));
@@ -460,8 +461,7 @@ class Fcache extends Handler implements \ArrayAccess
             $header['position'] = $position;
             return $header;
         }
-        $this->setError('Get key header failed');
-        return false;
+        return $this->setError('Get key header failed');
     }
 
     /**
@@ -502,9 +502,10 @@ class Fcache extends Handler implements \ArrayAccess
     /**
      * 循环读取执行函数
      * 1. position 位置无法读取 header 信息, 返回 0
-     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 next position 值
+     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 (int) next position 值
      * 3. position 位置正确获取 header 和 值, 返回数组 [next => int , key => string, value => mixed]
-     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 next
+     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 (int) next position
+     * 5. op=true 的情况是优化进程在读取, 可返回不同的 value, 用于 writeOptimize
      * @param $handler
      * @param $position
      * @param bool $op

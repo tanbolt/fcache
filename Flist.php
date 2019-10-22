@@ -842,8 +842,7 @@ class Flist extends Handler implements \ArrayAccess
             // keyLength/prevPosition/nextPosition/valuePosition - keyValue
             $header = unpack('vkLen/Vprev/Vnext/Vposition', fread($handler, 14));
             if (!is_array($header) || count($header) !== 4) {
-                $this->setError('Read key header failed');
-                return false;
+                return $this->setError('Read key header failed');
             }
             $header['now'] = $position;
             $header['key'] = $header['kLen'] ? (string) fread($handler, $header['kLen']) : null;
@@ -986,8 +985,7 @@ class Flist extends Handler implements \ArrayAccess
         if ($header && count($header) === 3 && $header['vLen'] && strlen($crc = fread($handler, 4)) === 4) {
             $header['crc'] = $crc;
         } else {
-            $this->setError('Read key list value failed');
-            return false;
+            return $this->setError('Read key list value failed');
         }
         $header['position'] = $position;
         if ($withValue) {
@@ -1012,8 +1010,7 @@ class Flist extends Handler implements \ArrayAccess
             if ($throw) {
                 throw new RuntimeException($error);
             }
-            $this->setError($error);
-            return false;
+            return $this->setError($error);
         }
         return $this;
     }
@@ -1057,9 +1054,10 @@ class Flist extends Handler implements \ArrayAccess
     /**
      * 循环读取执行函数
      * 1. position 位置无法读取 header 信息, 返回 0
-     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 next position 值
+     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 (int) next position 值
      * 3. position 位置正确获取 header 和 值, 返回数组 [next => int , key => string, value => mixed]
-     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 next
+     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 (int) next position
+     * 5. op=true 的情况是优化进程在读取, 可返回不同的 value, 用于 writeOptimize
      * @param $handler
      * @param $position
      * @param bool $op

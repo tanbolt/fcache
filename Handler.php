@@ -250,8 +250,7 @@ abstract class Handler implements \Iterator, \Countable
         }
         $this->handler = fopen($this->path, 'rb+');
         if (!$this->handler) {
-            $this->setError('Open file ['.$this->path.'] failed');
-            return false;
+            return $this->setError('Open file ['.$this->path.'] failed');
         }
         if ($exist) {
             return $this->checkHandler($this->handler, $type, $tries);
@@ -287,8 +286,7 @@ abstract class Handler implements \Iterator, \Countable
         if ($stat['size'] !== static::MASK * 4 + $this->getStartLength()) {
             fclose($handler);
             unlink($this->path);
-            $this->setError('Create file ['.$this->path.'] failed');
-            return false;
+            return $this->setError('Create file ['.$this->path.'] failed');
         }
         return $handler;
     }
@@ -306,8 +304,7 @@ abstract class Handler implements \Iterator, \Countable
             return $handler;
         }
         if ($tries > 100) {
-            $this->setError('Cache ['.$this->path.'] is used by other process');
-            return false;
+            return $this->setError('Cache ['.$this->path.'] is used by other process');
         } elseif ($tries > 0) {
             usleep(20000);
         }
@@ -371,8 +368,7 @@ abstract class Handler implements \Iterator, \Countable
             return $this->getHandler($type);
         }
         if ($tries > 30) {
-            $this->setError('Cache ['.$this->path.'] is busy for optimize process');
-            return false;
+            return $this->setError('Cache ['.$this->path.'] is busy for optimize process');
         }
         // 关闭文件指针, 给优化执行进程修改文件名一个时间窗口
         $this->close();
@@ -657,8 +653,7 @@ abstract class Handler implements \Iterator, \Countable
         $createTime = unpack('V', fread($handler, 4));
         if (!is_array($createTime) || !isset($createTime[1])) {
             fclose($handler);
-            $this->setError('Get last optimize time failed');
-            return false;
+            return $this->setError('Get last optimize time failed');
         }
         $createTime = (int) $createTime[1];
         if ($createTime + $miniInterval > time()) {
@@ -668,8 +663,7 @@ abstract class Handler implements \Iterator, \Countable
         // touch lock file
         if (!touch($this->lockFile())) {
             fclose($handler);
-            $this->setError('Create lock file failed');
-            return false;
+            return $this->setError('Create lock file failed');
         }
         // 修改当前缓存文件状态: waiting optimize
         if (fseek($handler, $this->getHeaderLen(1), SEEK_SET) < 0 ||
@@ -677,8 +671,7 @@ abstract class Handler implements \Iterator, \Countable
         ) {
             fclose($handler);
             unlink($this->lockFile());
-            $this->setError('Modify cache file header failed');
-            return false;
+            return $this->setError('Modify cache file header failed');
         }
         fclose($handler);
         if ($time = (int) ini_get('max_execution_time')) {
@@ -710,8 +703,7 @@ abstract class Handler implements \Iterator, \Countable
             // try again
             if ($tries > 200) {
                 unlink($this->lockFile());
-                $this->setError('Change cache file name ['.$this->path.'] to ['.$opFileName.'] failed');
-                return false;
+                return $this->setError('Change cache file name ['.$this->path.'] to ['.$opFileName.'] failed');
             }
             usleep(10000);
             return $this->startOptimize(++$tries);
@@ -727,8 +719,7 @@ abstract class Handler implements \Iterator, \Countable
             $this->writeBufferToHandler($handler, 0);
             fclose($handler);
             rename($this->opFile(), $this->path);
-            $this->setError('ReCreate cache file failed');
-            return false;
+            return $this->setError('ReCreate cache file failed');
         }
         // change cache header: optimized=1
         $handler = $this->createHandler($handler, 1);
@@ -843,8 +834,7 @@ abstract class Handler implements \Iterator, \Countable
         if (!$remove) {
             // 刚好其他进程再对临时文件进行读写, 多尝试几次
             if ($tries > 20) {
-                $this->setError('Remove optimize temp failed');
-                return false;
+                return $this->setError('Remove optimize temp failed');
             }
             usleep(100000);
             return $this->removeOptimizeTemp(++$tries);
@@ -873,8 +863,7 @@ abstract class Handler implements \Iterator, \Countable
         fseek($handler, $seek, SEEK_SET);
         $position = unpack('V', fread($handler, 4));
         if (!is_array($position) || !isset($position[1])) {
-            $this->setError('Read pack number failed');
-            return false;
+            return $this->setError('Read pack number failed');
         }
         return (int) $position[1];
     }
@@ -922,8 +911,7 @@ abstract class Handler implements \Iterator, \Countable
             return true;
         }
         if ($tries > 99) {
-            $this->setError('Write buffer failed');
-            return false;
+            return $this->setError('Write buffer failed');
         }
         usleep(100);
         fseek($handler, -1 * $writeLen, SEEK_CUR);
@@ -1089,7 +1077,7 @@ abstract class Handler implements \Iterator, \Countable
      * @param $key
      * @return int
      */
-    protected static function getKeyIndex($key)
+    public static function getKeyIndex($key)
     {
         $key = (string) $key;
         if (!strlen($key)) {
@@ -1131,9 +1119,9 @@ abstract class Handler implements \Iterator, \Countable
     /**
      * 循环读取中 读取数据接口
      * 1. position 位置无法读取 header 信息, 返回 0
-     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 next position 值
+     * 2. position 位置获取到 header 信息 但未获取到值, 返回 header 中的 (int) next position 值
      * 3. position 位置正确获取 header 和 值, 返回数组 [next => int , key => string, value => mixed]
-     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 next
+     * 4. 若 $onlyPosition=true 只需返回 position 位置 header 中的 (int) next position
      * 5. op=true 的情况是优化进程在读取, 可返回不同的 value, 用于 writeOptimize
      * @param $handler
      * @param $position

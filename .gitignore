@@ -1,0 +1,8 @@
+
+.DS_Store
+.AppleDouble
+.LSOverride
+.phpunit.result.cache
+
+# Thumbnails
+._*
